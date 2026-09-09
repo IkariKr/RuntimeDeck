@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Runtime Dashboard</title>
+  <meta name="description" content="AI Runtime 显式遥控器 - 面向单卡/多卡工作站的进程与显存管理面板">
+  <meta name="application-name" content="AI Runtime Dashboard">
+  <meta name="theme-color" content="#030712">
+  <meta name="robots" content="noindex,nofollow,noarchive,nosnippet">
+  <!-- Same-origin local static assets only (zero external network requests) -->
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/tailwindcss.js"></script>
+  <script defer src="/static/alpine.min.js"></script>
+</head>
+<body>
+  <div class="dashboard-container">
+    
+    <!-- 顶栏 -->
+    <header class="card header-card" role="banner">
+      <div>
+        <h1 class="header-title">AI Runtime 显式遥控器</h1>
+        <p class="header-subtitle">面向单卡/多卡工作站的进程与显存管理面板</p>
+      </div>
+      <button id="btnRefresh" type="button" class="btn-refresh" title="点击立即刷新状态" aria-label="刷新数据">刷新数据</button>
+    </header>
+
+    <!-- 主内容区 -->
+    <main class="dashboard-main" role="main">
+      <!-- 错误告警区 -->
+      <div id="errorContainer" class="error-box" role="alert" aria-live="assertive" aria-atomic="true" aria-label="错误告警信息" style="display: none;"></div>
+
+      <!-- GPU 硬件显存卡片 -->
+      <section id="gpuContainer" class="gpu-grid" role="region" aria-label="GPU 显存指标" aria-live="polite">
+        <div class="gpu-card" style="grid-column: 1 / -1; text-align: center; color: var(--text-muted);">
+          正在加载 GPU 显存指标...
+        </div>
+      </section>
+
+      <!-- 运行中实例列表 -->
+      <section class="card" aria-labelledby="instancesHeading">
+        <h2 id="instancesHeading" class="section-title">受管实例清单</h2>
+        <div id="instanceContainer" role="region" aria-live="polite" aria-label="受管实例清单内容">
+          <div class="empty-state">当前没有运行中的 AI 进程实例</div>
+        </div>
+      </section>
+
+      <!-- 显式启动面板 -->
+      <section class="card" aria-labelledby="startHeading">
+        <h2 id="startHeading" class="section-title">显式启动新实例</h2>
+        <div class="form-grid">
+          <div class="form-field">
+            <label class="form-label" for="profileSelect">选择模型 / 服务预设</label>
+            <select id="profileSelect" class="form-select" aria-label="选择模型或服务预设"></select>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="gpuSelect">目标显卡 (可手动覆盖)</label>
+            <select id="gpuSelect" class="form-select" aria-label="目标显卡 (可手动覆盖)"></select>
+          </div>
+        </div>
+        <button id="btnStart" type="button" class="btn-start" aria-label="显式启动选定服务">
+          🚀 显式启动选定服务
+        </button>
+      </section>
+    </main>
+
+  </div>
+
+  <!-- Vanilla JS runtime logic ensuring full offline functionality -->
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+{
+  "gpus": {
+    "gpu_main": {
+      "name": "NVIDIA GeForce RTX 3080",
+      "uuid": "GPU-00000000-0000-0000-0000-000000000001"
+    },
+    "gpu_aux": {
+      "name": "NVIDIA GeForce RTX 3070",
+      "uuid": "GPU-00000000-0000-0000-0000-000000000002"
+    }
+  },
+  "profiles": {
+    "llama_qwen_service": {
+      "name": "Qwen 27B Llama.cpp Server",
+      "default_gpu": "gpu_main",
+      "cwd": "C:\\Runtimes\\llama.cpp",
+      "executable": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "call",
+        "C:\\Runtimes\\llama.cpp\\start-qwen-server.cmd"
+      ],
+      "managed_process": {
+        "executable": "llama-server.exe",
+        "exe_names": [
+          "llama-server.exe",
+          "llama-server"
+        ],
+        "role": "Coordinator Router (llama.cpp)",
+        "process_role": "Coordinator Router (llama.cpp)",
+        "markers": [
+          "llama-server.exe",
+          "--models-preset",
+          "qwen_preset.ini"
+        ],
+        "cmd_markers": [
+          "models-preset",
+          "qwen_preset.ini"
+        ]
+      }
+    },
+    "comfyui_sd_service": {
+      "name": "ComfyUI Standard Server",
+      "default_gpu": "gpu_main",
+      "cwd": "C:\\Runtimes\\ComfyUI_windows_portable",
+      "executable": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "call",
+        "C:\\Runtimes\\ComfyUI_windows_portable\\run_gpu.bat"
+      ],
+      "managed_process": {
+        "executable": "python.exe",
+        "exe_names": [
+          "python.exe",
+          "python"
+        ],
+        "role": "ComfyUI Server (python)",
+        "process_role": "ComfyUI Server (python)",
+        "markers": [
+          "ComfyUI/main.py",
+          "ComfyUI\\main.py"
+        ],
+        "cmd_markers": [
+          "ComfyUI",
+          "main.py"
+        ]
+      }
+    }
+  }
+}

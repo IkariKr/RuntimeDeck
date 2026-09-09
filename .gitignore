@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & Virtualenv
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Local runtime & mutable state (keep clean repository)
+state.json
+*.state.json
+*.log
+*.tmp
+*.bak
+
+# Local hardware / path configurations (use runtimes.example.json for VCS)
+runtimes.json
+runtimes.local.json
+
+# IDEs and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+htmlcov/
