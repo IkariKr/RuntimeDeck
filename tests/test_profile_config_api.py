@@ -194,6 +194,7 @@ def test_status_reports_model_metadata(profile_test_env, monkeypatch):
     assert inst_view["model_id"] == "qwen3.8-27b-test"
     assert inst_view["context_size"] == "160K"
     assert inst_view["kv_quant"] == "K Q8_0 / V Q4_0"
+    assert inst_view["port"] == 8080
 
 
 def test_status_handles_numeric_and_arbitrary_metadata_types(profile_test_env, monkeypatch):
@@ -257,3 +258,46 @@ def test_status_falls_back_to_profile_config_metadata(profile_test_env, monkeypa
     assert inst_view["model_id"] == "bge-small"
     assert inst_view["context_size"] == "2K"
     assert inst_view["kv_quant"] == "F16"
+
+
+def test_coerce_port_and_status_overflow_defense(profile_test_env, monkeypatch):
+    """Port resolution must defend against overflow, inf, and invalid state values."""
+    from runtime_deck.models import _coerce_port
+
+    # Unit checks for _coerce_port
+    assert _coerce_port(8080) == 8080
+    assert _coerce_port("8080") == 8080
+    assert _coerce_port(0) is None
+    assert _coerce_port(70000) is None
+    assert _coerce_port(-1) is None
+    assert _coerce_port(float("inf")) is None
+    assert _coerce_port(float("-inf")) is None
+    assert _coerce_port("invalid") is None
+    assert _coerce_port(None) is None
+
+    client = profile_test_env["client"]
+    state_mgr = profile_test_env["state_mgr"]
+
+    # State instance with out-of-bounds port 99999 should fall back to profile port (8080)
+    state = state_mgr.load_state()
+    state["instances"]["inst_port_fallback"] = {
+        "profile": "test_qwen",
+        "name": "Qwen 27B Port Fallback Test",
+        "pid": 66666,
+        "create_time": 4000.0,
+        "executable": "C:\\Runtimes\\test.exe",
+        "gpu": "3080",
+        "gpu_name": "RTX 3080 20G",
+        "started_at": "2026-10-04T12:00:00",
+        "port": 99999,
+    }
+    state_mgr.save_state_atomic(state)
+
+    monkeypatch.setattr(server, "check_process_identity", lambda pid, ctime: ("match", MagicMock()))
+    monkeypatch.setattr(server, "get_gpu_metrics", lambda: ([], []))
+
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    inst_view = resp.json()["instances"]["inst_port_fallback"]
+    assert inst_view["port"] == 8080
+

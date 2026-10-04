@@ -33,7 +33,7 @@ def resolve_profile_port(profile: Dict[str, Any]) -> Optional[int]:
             p = int(explicit_port)
             if 1 <= p <= 65535:
                 return p
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
 
     # 2. Explicit managed_process.port
@@ -45,7 +45,7 @@ def resolve_profile_port(profile: Dict[str, Any]) -> Optional[int]:
                 p = int(m_port)
                 if 1 <= p <= 65535:
                     return p
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 pass
 
     # 3. Scan launcher args

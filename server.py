@@ -33,6 +33,7 @@ from runtime_deck.models import (
     ScriptResponse,
     ScriptSaveRequest,
     ScriptSaveResponse,
+    _coerce_port,
 )
 from runtime_deck.ports import (
     find_port_listener,
@@ -290,6 +291,7 @@ def get_status():
         model_id = inst.get("model_id") or prof_meta.get("model_id")
         context_size = inst.get("context_size") or prof_meta.get("context_size")
         kv_quant = inst.get("kv_quant") or prof_meta.get("kv_quant")
+        port = _coerce_port(inst.get("port")) or resolve_profile_port(prof_meta)
 
         # Explicit construction - no raw or redacted command line in the public API.
         view_instances[inst_id] = InstanceView(
@@ -308,6 +310,7 @@ def get_status():
             model_id=model_id,
             context_size=context_size,
             kv_quant=kv_quant,
+            port=port,
             is_alive=True,
             identity_status="match",
             is_legacy=False,
@@ -621,6 +624,7 @@ def _internal_start_profile(
             "model_id": p.get("model_id"),
             "context_size": p.get("context_size"),
             "kv_quant": p.get("kv_quant"),
+            "port": resolve_profile_port(p),
         }
         state_manager.save_state_atomic(state)
 

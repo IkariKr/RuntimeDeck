@@ -969,6 +969,7 @@
             const modelId = inst.model_id || (profileCfg && profileCfg.model_id) || '未知';
             const contextSize = inst.context_size || (profileCfg && profileCfg.context_size) || '未知';
             const kvQuant = inst.kv_quant || (profileCfg && profileCfg.kv_quant) || '未知';
+            const port = inst.port || (profileCfg && profileCfg.port) || '未知';
 
             let launcherPidHtml = '';
             if (launcherPid) {
@@ -985,6 +986,7 @@
                 <div class="instance-meta">
                   <div class="instance-meta-row">
                     <span>GPU: <span class="meta-value">${escapeHtml(inst.gpu || '未知')}</span></span>
+                    <span>端口: <span class="meta-value font-mono">${escapeHtml(port)}</span></span>
                     <span>进程角色: <span class="meta-value">${escapeHtml(processRole)}</span></span>
                   </div>
                   <div class="instance-meta-row">

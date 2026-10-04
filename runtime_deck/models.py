@@ -12,6 +12,17 @@ def _coerce_meta_str(v: Any) -> Optional[str]:
     return s if s else None
 
 
+def _coerce_port(v: Any) -> Optional[int]:
+    """Coerce arbitrary port representations to an integer within legal range."""
+    if v is None:
+        return None
+    try:
+        p = int(v)
+        return p if 1 <= p <= 65535 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 class GpuConfig(BaseModel):
     name: str
     uuid: str
@@ -38,6 +49,11 @@ class ProfileConfig(BaseModel):
     model_id: Optional[str] = None
     context_size: Optional[str] = None
     kv_quant: Optional[str] = None
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def normalize_port(cls, v: Any) -> Optional[int]:
+        return _coerce_port(v)
 
     @field_validator("model_id", "context_size", "kv_quant", mode="before")
     @classmethod
@@ -108,6 +124,12 @@ class InstanceRecord(BaseModel):
     model_id: Optional[str] = None
     context_size: Optional[str] = None
     kv_quant: Optional[str] = None
+    port: Optional[int] = None
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def normalize_port(cls, v: Any) -> Optional[int]:
+        return _coerce_port(v)
 
     @field_validator("model_id", "context_size", "kv_quant", mode="before")
     @classmethod
@@ -131,9 +153,15 @@ class InstanceView(BaseModel):
     model_id: Optional[str] = None
     context_size: Optional[str] = None
     kv_quant: Optional[str] = None
+    port: Optional[int] = None
     is_alive: bool
     identity_status: str  # "match" | "mismatch" | "not_found" | "error"
     is_legacy: bool = False
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def normalize_port(cls, v: Any) -> Optional[int]:
+        return _coerce_port(v)
 
     @field_validator("model_id", "context_size", "kv_quant", mode="before")
     @classmethod
