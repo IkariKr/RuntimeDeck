@@ -53,6 +53,7 @@ def client_env(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(server, "CONFIG_FILE", temp_config_file)
     monkeypatch.setattr(server, "STATE_FILE", temp_state_file)
     monkeypatch.setattr(server, "state_manager", temp_state_mgr)
+    monkeypatch.setattr(server, "find_port_listener", lambda port: None)
 
     test_client = TestClient(server.app)
     return {
@@ -268,10 +269,11 @@ def test_start_instance_metadata_failure_triggers_orphan_cleanup(client_env):
     mock_popen.pid = 9999
 
     # Popen succeeds, but psutil.Process fails
-    with patch("subprocess.Popen", return_value=mock_popen):
-        with patch("psutil.Process", side_effect=RuntimeError("Cannot inspect process metadata")):
-            with patch("server.kill_process_tree") as mock_kill:
-                resp = client.post("/api/instances/start", json={"profile": "qwen_160k"})
+    with patch("server.find_port_listener", return_value=None):
+        with patch("subprocess.Popen", return_value=mock_popen):
+            with patch("psutil.Process", side_effect=RuntimeError("Cannot inspect process metadata")):
+                with patch("server.kill_process_tree") as mock_kill:
+                    resp = client.post("/api/instances/start", json={"profile": "qwen_160k"})
 
     assert resp.status_code == 500
     assert "拉起子进程失败" in resp.json()["detail"]
@@ -281,6 +283,91 @@ def test_start_instance_metadata_failure_triggers_orphan_cleanup(client_env):
     # Verify no dangling instance was saved to state
     current_state = state_mgr.load_state()
     assert "inst_9999" not in current_state.get("instances", {})
+
+
+def test_start_instance_port_conflict_returns_409(client_env):
+    """POST /api/instances/start returns 409 with PortConflictDetail when target port is occupied."""
+    client = client_env["client"]
+    fake_listener = {
+        "port": 8080,
+        "pid": 5555,
+        "name": "llama-server.exe",
+        "create_time": 1725800000.0,
+        "exe": "G:\\App\\llama.cpp\\llama-server.exe",
+        "is_system": False,
+    }
+
+    with patch("server.find_port_listener", return_value=fake_listener):
+        resp = client.post("/api/instances/start", json={"profile": "qwen_160k", "gpu": "3080"})
+
+    assert resp.status_code == 409
+    data = resp.json()["detail"]
+    assert data["conflict"] == "port_in_use"
+    assert data["port"] == 8080
+    assert data["pid"] == 5555
+    assert data["name"] == "llama-server.exe"
+    assert data["can_force_clean"] is True
+
+
+def test_start_instance_port_conflict_force_clean_success(client_env):
+    """POST /api/instances/start with force_clean_port=True terminates occupier and starts."""
+    client = client_env["client"]
+    state_mgr = client_env["state_mgr"]
+
+    fake_listener = {
+        "port": 8080,
+        "pid": 5555,
+        "name": "llama-server.exe",
+        "create_time": 1725800000.0,
+        "exe": "G:\\App\\llama.cpp\\llama-server.exe",
+        "is_system": False,
+    }
+
+    mock_popen = MagicMock()
+    mock_popen.pid = 8888
+    mock_psutil_proc = MagicMock(spec=psutil.Process)
+    mock_psutil_proc.create_time.return_value = 1725805555.0
+
+    # First check finds listener, then cleanup is called, wait_port_free returns True
+    with patch("server.find_port_listener", return_value=fake_listener), \
+         patch("server.kill_process_tree") as mock_kill, \
+         patch("server.wait_process_exit", return_value=True), \
+         patch("server.wait_port_free", return_value=True), \
+         patch("subprocess.Popen", return_value=mock_popen), \
+         patch("psutil.Process", return_value=mock_psutil_proc):
+
+        mock_kill.return_value.returncode = 0
+        resp = client.post(
+            "/api/instances/start",
+            json={"profile": "qwen_160k", "gpu": "3080", "force_clean_port": True, "expected_port_pid": 5555},
+        )
+
+    assert resp.status_code == 200
+    mock_kill.assert_called_once_with(5555)
+    assert resp.json()["status"] == "success"
+    assert resp.json()["instance_id"] == "inst_8888"
+
+
+def test_start_instance_port_conflict_protected_system_pid_rejected(client_env):
+    """POST /api/instances/start refuses to kill system process occupying port."""
+    client = client_env["client"]
+    fake_listener = {
+        "port": 8080,
+        "pid": 4,
+        "name": "System",
+        "create_time": 0.0,
+        "exe": "",
+        "is_system": True,
+    }
+
+    with patch("server.find_port_listener", return_value=fake_listener):
+        resp = client.post(
+            "/api/instances/start",
+            json={"profile": "qwen_160k", "gpu": "3080", "force_clean_port": True},
+        )
+
+    assert resp.status_code == 403
+    assert "无法清理系统或受保护进程" in resp.json()["detail"]
 
 
 def test_stop_instance_unknown_returns_404(client_env):
@@ -870,5 +957,150 @@ def test_v1_stop_unknown_profile_returns_404(client_env):
     resp = client.post("/api/v1/profiles/non_existent_profile/stop")
     assert resp.status_code == 404
     assert "未找到 Profile" in resp.json()["detail"]
+
+
+def test_list_gpu_processes_returns_sanitized_snapshot(client_env):
+    client = client_env["client"]
+    process_rows = [{
+        "gpu_index": 0,
+        "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "pid": 123,
+        "name": "python.exe",
+        "executable": "python.exe",
+        "used_mb": 4096,
+        "create_time": 100.0,
+    }]
+    with patch("server.get_gpu_metrics", return_value=([{
+        "index": 0,
+        "name": "RTX 3080",
+        "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "used_mb": 4096,
+        "total_mb": 20480,
+        "util_percent": 10,
+    }], [])), patch("server.get_gpu_processes", return_value=(process_rows, [])):
+        resp = client.get("/api/gpus/0/processes")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["gpu_index"] == 0
+    assert body["processes"][0]["pid"] == 123
+    assert "command_line" not in body["processes"][0]
+    assert "environment" not in body["processes"][0]
+
+
+def test_list_gpu_processes_unknown_gpu_returns_404(client_env):
+    client = client_env["client"]
+    with patch("server.get_gpu_metrics", return_value=([], [])):
+        resp = client.get("/api/gpus/9/processes")
+    assert resp.status_code == 404
+    assert "未找到 GPU 9" in resp.json()["detail"]
+
+
+def test_kill_gpu_process_rechecks_gpu_and_identity(client_env):
+    client = client_env["client"]
+    process_row = {
+        "gpu_index": 0,
+        "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "pid": 123,
+        "name": "python.exe",
+        "executable": "python.exe",
+        "used_mb": 4096,
+        "create_time": 100.0,
+    }
+    process = MagicMock(spec=psutil.Process)
+    with patch("server.get_gpu_metrics", return_value=([{
+        "index": 0,
+        "name": "RTX 3080",
+        "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "used_mb": 4096,
+        "total_mb": 20480,
+        "util_percent": 10,
+    }], [])), patch("server.get_gpu_processes", return_value=([process_row], [])), patch(
+        "server.check_process_identity", return_value=("match", process)
+    ), patch("server.kill_process_tree", return_value=MagicMock(returncode=0)) as kill, patch(
+        "server.wait_process_exit", return_value=True
+    ):
+        resp = client.post("/api/gpus/0/processes/123/kill", json={"create_time": 100.0})
+
+    assert resp.status_code == 200
+    assert resp.json()["exited"] is True
+    kill.assert_called_once_with(123)
+
+
+def test_kill_gpu_process_rejects_pid_that_left_gpu(client_env):
+    client = client_env["client"]
+    with patch("server.get_gpu_metrics", return_value=([{
+        "index": 0,
+        "name": "RTX 3080",
+        "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "used_mb": 0,
+        "total_mb": 20480,
+        "util_percent": 0,
+    }], [])), patch("server.get_gpu_processes", return_value=([], [])), patch(
+        "server.kill_process_tree"
+    ) as kill:
+        resp = client.post("/api/gpus/0/processes/123/kill", json={"create_time": 100.0})
+
+    assert resp.status_code == 409
+    assert "不再占用该 GPU" in resp.json()["detail"]
+    kill.assert_not_called()
+
+
+def test_kill_gpu_process_rejects_system_pid(client_env):
+    client = client_env["client"]
+    process_row = {
+        "gpu_index": 0,
+        "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "pid": 4,
+        "name": "System",
+        "executable": "[Insufficient Permissions]",
+        "used_mb": None,
+        "create_time": 0.0,
+        "can_kill": False,
+        "kill_reason": "系统进程不可结束",
+    }
+    with patch("server.get_gpu_metrics", return_value=([{
+        "index": 0,
+        "name": "RTX 3080",
+        "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "used_mb": 0,
+        "total_mb": 20480,
+        "util_percent": 0,
+    }], [])), patch("server.get_gpu_processes", return_value=([process_row], [])), patch(
+        "server.kill_process_tree"
+    ) as kill:
+        resp = client.post("/api/gpus/0/processes/4/kill", json={"create_time": 0.0})
+
+    assert resp.status_code == 403
+    assert "系统进程不可结束" in resp.json()["detail"]
+    kill.assert_not_called()
+
+
+def test_kill_gpu_process_rejects_pid_reuse(client_env):
+    client = client_env["client"]
+    process_row = {
+        "gpu_index": 0,
+        "gpu_uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "pid": 123,
+        "name": "python.exe",
+        "executable": "python.exe",
+        "used_mb": 4096,
+        "create_time": 200.0,
+    }
+    with patch("server.get_gpu_metrics", return_value=([{
+        "index": 0,
+        "name": "RTX 3080",
+        "uuid": "GPU-00000000-0000-0000-0000-000000000001",
+        "used_mb": 4096,
+        "total_mb": 20480,
+        "util_percent": 10,
+    }], [])), patch("server.get_gpu_processes", return_value=([process_row], [])), patch(
+        "server.check_process_identity", return_value=("mismatch", MagicMock(spec=psutil.Process))
+    ), patch("server.kill_process_tree") as kill:
+        resp = client.post("/api/gpus/0/processes/123/kill", json={"create_time": 100.0})
+
+    assert resp.status_code == 409
+    assert "PID 身份已变化" in resp.json()["detail"]
+    kill.assert_not_called()
 
 

@@ -208,6 +208,25 @@ For internal frontend consumption and low-level diagnostic automation:
 
 ---
 
+## Profile Script Editor
+
+The launch panel includes a lightweight offline editor for the Batch script referenced by the selected Profile. It supports `.cmd` and `.bat` files, basic syntax highlighting, command-prefix completion, `Ctrl+Space`, and `Tab` completion. Editing changes remain local to the browser until **Save Script** is pressed.
+
+The editor never accepts an arbitrary client-provided path. The backend resolves the single script reference already present in the Profile's `args`, rejects links and paths outside a relative Profile `cwd`, and does not modify `runtimes.json`.
+
+Hover over the editor to reveal the compact text search bar, or press `Ctrl+F` (`Cmd+F` on macOS). Enter a literal search term and click **确定**; `Enter` moves to the next match and `Shift+Enter` moves to the previous match. `Escape` closes the search bar. Searching selects the match in place without changing the script or its unsaved state.
+
+### Script API
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/profiles/{profile_id}/script` | Read the configured `.cmd`/`.bat` script and return its content plus a SHA-256 revision. |
+| `PUT` | `/api/profiles/{profile_id}/script` | Atomically save `content` only when `expected_revision` still matches the file on disk. |
+
+The response exposes only the Profile ID, script filename, language, content, revision, and editability; it never returns the server-side absolute path. A stale revision returns HTTP `409` and leaves the external file untouched. Profiles without a configured Batch script are shown as read-only.
+
+---
+
 ## Safe Deployment & Network Boundaries
 
 ```
@@ -278,7 +297,7 @@ The test suite validates process lifecycle invariants, PID reuse defenses, fail-
 ```bash
 pytest -v tests
 ```
-*(96 comprehensive automated unit and integration tests passing)*
+*(115 comprehensive automated unit and integration tests passing)*
 
 ---
 

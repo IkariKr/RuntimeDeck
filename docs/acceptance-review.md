@@ -29,6 +29,7 @@
 | **AC-21** | **敏感命令行参数脱敏**：`--api-key`、`--token`、`--hf-token`、`--password`、`Authorization: Bearer [REDACTED]`、`KEY=value` 等敏感凭据在状态文件、API 响应及错误信息中强制脱敏为 `[REDACTED]`。 | `runtime_deck/security.py`<br>`server.py` | `test_api.py::test_redact_command_line_args_and_secrets`<br>`test_api.py::test_safe_error_detail_sanitizes_and_truncates`<br>`test_api.py::test_status_and_state_never_expose_raw_command_line_or_secrets`<br>`test_api.py::test_start_instance_stores_redacted_command_line_without_secret` | **PASS** |
 | **AC-22** | **运行态文件外置与路径优先级**：状态文件优先使用 `RUNTIMEDECK_STATE_FILE`，默认外置至 `%LOCALAPPDATA%\RuntimeDeck\state.json`，支持对旧根目录 `state.json` 的只读平滑回退。 | `runtime_deck/state.py` (`resolve_default_state_file`, `StateManager`) | `test_state.py::test_resolve_default_state_file_env_priority`<br>`test_state.py::test_resolve_default_state_file_localappdata`<br>`test_state.py::test_resolve_default_state_file_fallback_project_dir`<br>`test_state.py::test_state_manager_legacy_fallback_read_compatibility` | **PASS** |
 | **AC-23** | **稳定版本化 `/api/v1` Profile 契约**：提供 `/api/v1/profiles` 与 `/api/v1/profiles/{id}/(status|start|stop)`，仅返回安全业务字段，绝对不返回物理 PID、launcher、真实命令或环境变量。 | `server.py`<br>`runtime_deck/models.py` | `test_api.py::test_v1_profiles_returns_safe_fields_only`<br>`test_api.py::test_v1_profile_status_stopped_when_no_instance`<br>`test_api.py::test_v1_profile_status_running_and_safe_fields`<br>`test_api.py::test_v1_profile_status_identity_mismatch_and_error`<br>`test_api.py::test_v1_start_profile_success_never_returns_pid_or_launcher`<br>`test_api.py::test_v1_stop_profile_success_never_returns_pid_or_launcher`<br>`test_api.py::test_v1_stop_unknown_profile_returns_404` | **PASS** |
+| **AC-24** | **Profile 启动脚本编辑器**：选定 Profile 显示已配置 `.cmd/.bat` 内容，浏览器端提供 Batch 高亮与基础补全；只有显式保存才更新脚本，使用 revision 防止覆盖外部修改；无脚本 Profile 为只读。 | `runtime_deck/scripts.py`<br>`server.py`<br>`static/index.html`<br>`static/app.js`<br>`static/styles.css` | `test_scripts.py`<br>`test_script_api.py`<br>`test_script_editor_static.py` | **PASS** |
 
 ---
 
@@ -38,9 +39,9 @@
 
 ```text
 pytest -q RuntimeDeck/tests
-96 passed in 4.13s
+115 passed in 4.75s
 
-覆盖范围：核心 API 与状态安全、敏感参数脱敏与密钥隔离、外置持久化路径与向后兼容加载、稳定版本化 /api/v1 Profile 契约、真实 llama-server/ComfyUI PID 发现、启动基线排除、多候选 fail-closed、真实 PID 优先停止、launcher 清理失败保留 state、旧/已退出记录隐藏与 state 清理、响应式布局与离线资源。
+覆盖范围：核心 API 与状态安全、敏感参数脱敏与密钥隔离、外置持久化路径与向后兼容加载、稳定版本化 /api/v1 Profile 契约、Profile 脚本读取/原子保存/revision 冲突与路径边界、离线 Batch 编辑器高亮/补全/只读与响应式布局、真实 llama-server/ComfyUI PID 发现、启动基线排除、多候选 fail-closed、真实 PID 优先停止、launcher 清理失败保留 state、旧/已退出记录隐藏与 state 清理。
 ```
 
 ---
@@ -77,7 +78,7 @@ pytest -q RuntimeDeck/tests
 - **离线闭环**：根路径提供完整 Dashboard；静态资源通过同源 `/static/*` 加载；代码与资源扫描未发现公网 URL。
 - **响应式适配**：完成静态多分辨率（320/375/768px 及宽屏）验收测试，覆盖防溢出、卡片折叠、表单操作可用性及宽屏限宽。
 - **真实浏览器复核**：在 `320/375/768/1440px` viewport 下实测 `document.documentElement.scrollWidth === viewport width`；320/375px 为 GPU 单列、表单单列、实例停止按钮纵向全宽，768/1440px 为 GPU 双列、表单 `2fr 1fr`、实例横向布局。
-- **实际证据**：`pytest -q RuntimeDeck/tests` 为 **96 passed**；Python 与 JavaScript 语法检查通过；旧 `/api/status` 与 `/api/v1` 实际响应均未返回命令行、PID、launcher 或凭据；外置 state 为空；反索引路由与响应头已验证；重启控制面未接管或终止现有 ComfyUI/模型服务。
+- **实际证据**：`pytest -q RuntimeDeck/tests` 为 **115 passed**；Python 与 JavaScript 语法检查通过；脚本编辑 API、路径边界、revision 冲突与离线编辑器静态契约均已验证；旧 `/api/status` 与 `/api/v1` 实际响应均未返回命令行、PID、launcher 或凭据；外置 state 为空；反索引路由与响应头已验证；重启控制面未接管或终止现有 ComfyUI/模型服务。
 - **安全与 API 稳定化**：敏感参数自动脱敏（`[REDACTED]`）、状态文件外置至 `%LOCALAPPDATA%`（支持 `RUNTIMEDECK_STATE_FILE` 与旧文件兼容读取）、稳定 `/api/v1` Profile API 契约（脱敏且不暴露 PID/launcher/命令）全量覆盖并通过测试。
 
 最终结论：**RuntimeDeck 已按批准计划完成，满足当前规格与多分辨率响应式验收边界。**

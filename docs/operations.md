@@ -141,7 +141,41 @@ AI Agent 或自动化脚本对本地模型进行管控时，必须遵循 **API-F
 
 ---
 
-## 三、 稳定版本化 Profile API (`/api/v1`)
+## 三、 Profile 启动脚本编辑与保存
+
+启动面板会在选定 Profile 的“显式启动选定服务”按钮下显示其已配置的 `.cmd` 或 `.bat` 脚本。编辑器提供 Batch 命令高亮和基础补全；输入内容只保存在浏览器草稿中，必须点击“保存脚本”才会写入磁盘。
+
+脚本接口：
+
+```bash
+# 读取选定 Profile 的脚本
+curl -s http://127.0.0.1:8000/api/profiles/qwen_160k/script
+
+# 使用读取响应中的 revision 保存新内容
+curl -X PUT http://127.0.0.1:8000/api/profiles/qwen_160k/script \
+  -H "Content-Type: application/json" \
+  -d '{"content":"@echo off\necho ready\n","expected_revision":"<sha256>"}'
+```
+
+安全边界：
+
+- 服务端只解析 `runtimes.json` 中该 Profile `args` 已引用的唯一 `.cmd`/`.bat` 文件；客户端不能指定任意路径。
+- 相对脚本引用必须位于 Profile 的 `cwd` 内，且不能经过符号链接、junction 或其他链接目录。
+- 保存使用临时文件、`fsync` 和 `os.replace` 原子替换，并在替换前再次校验文件版本。
+- 版本不一致返回 HTTP `409`，不会覆盖外部修改；原子保存不会改写 `runtimes.json`。
+- 没有 Batch 脚本引用的 Profile 在 WebUI 中显示为只读。
+- 接口响应只包含文件名和内容等编辑所需字段，不返回服务器绝对路径。
+
+搜索操作：
+
+- 鼠标移入编辑区会显示搜索条；也可以按 `Ctrl+F`（macOS 为 `Cmd+F`）打开。
+- 输入普通文本后点击“确定”定位；按 Enter 跳到下一个匹配，按 Shift+Enter 跳到上一个匹配。
+- 按 Escape 关闭搜索条。搜索只移动编辑器选区，不修改脚本内容、不产生 dirty 状态，也不会写盘。
+- 脚本内容发生变化或切换 Profile 后，旧搜索结果会自动失效。
+
+---
+
+## 四、 稳定版本化 Profile API (`/api/v1`)
 
 针对外部自动化系统（如 Dreamina、NAS 调度器、Agent 编排流程）提供脱敏、稳定、版本化的 Profile 控制面 API。所有 `/api/v1` 端点永不暴露物理 PID、启动器 wrapper 信息、raw command_line 或环境变量密钥。
 
@@ -209,7 +243,7 @@ AI Agent 或自动化脚本对本地模型进行管控时，必须遵循 **API-F
 
 ---
 
-## 四、 状态文件存储与路径优先级
+## 五、 状态文件存储与路径优先级
 
 为避免将运行态持久化文件写入代码仓库造成脏代码树，RuntimeDeck 采用分层路径解析策略：
 
@@ -221,7 +255,7 @@ AI Agent 或自动化脚本对本地模型进行管控时，必须遵循 **API-F
 
 ---
 
-## 五、 配置维护指南 (`runtimes.json`)
+## 六、 配置维护指南 (`runtimes.json`)
 
 系统配置遵循极简主义（KISS 原则），采用静态 JSON 维护：
 
@@ -258,7 +292,7 @@ AI Agent 或自动化脚本对本地模型进行管控时，必须遵循 **API-F
 
 ---
 
-## 六、 常见异常排查与运维对策
+## 七、 常见异常排查与运维对策
 
 ### 1. `nvidia-smi` 采集失败
 * **现象**：`/api/status` 返回的 `gpus` 为空，`errors` 中包含 `"采集 nvidia-smi 失败: 未找到 nvidia-smi 命令"`。
@@ -281,7 +315,7 @@ AI Agent 或自动化脚本对本地模型进行管控时，必须遵循 **API-F
 
 ---
 
-## 七、 安全与敏感信息脱敏铁律
+## 八、 安全与敏感信息脱敏铁律
 
 1. **默认绑定**：默认绑定为 `127.0.0.1:8000`（仅限本机访问）。
 2. **严禁公网暴露**：

@@ -11,10 +11,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from runtime_deck.config import load_raw_config
-from runtime_deck.gpu import get_gpu_metrics
+from runtime_deck.config import delete_profile_config, load_raw_config
+from runtime_deck.gpu import get_gpu_metrics, get_gpu_processes
 from runtime_deck.models import (
+    DeleteProfileResponse,
+    GpuProcessesResponse,
+    GpuProcess,
     InstanceView,
+    KillGpuProcessRequest,
+    KillGpuProcessResponse,
+    PortConflictDetail,
     RuntimeKind,
     StartRequest,
     StartResponse,
@@ -24,6 +30,15 @@ from runtime_deck.models import (
     V1ProfileSummary,
     V1ProfilesResponse,
     V1StartRequest,
+    ScriptResponse,
+    ScriptSaveRequest,
+    ScriptSaveResponse,
+)
+from runtime_deck.ports import (
+    find_port_listener,
+    is_port_listening,
+    resolve_profile_port,
+    wait_port_free,
 )
 from runtime_deck.process import (
     IS_WINDOWS,
@@ -36,6 +51,18 @@ from runtime_deck.process import (
     wait_process_exit,
 )
 from runtime_deck.security import redact_command_line, safe_error_detail
+from runtime_deck.scripts import (
+    ScriptConflictError,
+    ScriptError,
+    ScriptNotFoundError,
+    ScriptNotRegularFileError,
+    ScriptReferenceError,
+    ScriptSaveError,
+    ScriptTooLargeError,
+    ScriptEncodingError,
+    read_script,
+    save_script,
+)
 from runtime_deck.state import StateManager, resolve_default_state_file
 
 # Logging setup
@@ -246,6 +273,9 @@ def get_status():
     safe_errors = [safe_error_detail(e) for e in errors]
 
     view_instances: Dict[str, InstanceView] = {}
+    cfg = get_current_config()
+    profiles_cfg = cfg.get("profiles", {})
+
     for inst_id, inst in state.get("instances", {}).items():
         # The dashboard lists only verifiably alive real service processes.
         # Legacy wrapper-only and stale records remain hidden until explicitly cleaned.
@@ -255,6 +285,11 @@ def get_status():
         identity_status, _ = check_process_identity(inst["pid"], inst.get("create_time", 0))
         if identity_status != "match":
             continue
+
+        prof_meta = profiles_cfg.get(inst.get("profile"), {}) if isinstance(profiles_cfg, dict) else {}
+        model_id = inst.get("model_id") or prof_meta.get("model_id")
+        context_size = inst.get("context_size") or prof_meta.get("context_size")
+        kv_quant = inst.get("kv_quant") or prof_meta.get("kv_quant")
 
         # Explicit construction - no raw or redacted command line in the public API.
         view_instances[inst_id] = InstanceView(
@@ -270,6 +305,9 @@ def get_status():
             launcher_pid=inst.get("launcher_pid"),
             launcher_create_time=inst.get("launcher_create_time"),
             launcher_executable=inst.get("launcher_executable"),
+            model_id=model_id,
+            context_size=context_size,
+            kv_quant=kv_quant,
             is_alive=True,
             identity_status="match",
             is_legacy=False,
@@ -288,8 +326,102 @@ def get_config():
     return get_current_config()
 
 
+def _gpu_for_index(gpu_index: int) -> Dict[str, Any]:
+    """Resolve a live GPU index and UUID without trusting client-supplied UUIDs."""
+    gpus, errors = get_gpu_metrics()
+    if errors:
+        raise HTTPException(status_code=503, detail=safe_error_detail(errors[0]))
+    for gpu in gpus:
+        if gpu["index"] == gpu_index:
+            return gpu
+    raise HTTPException(status_code=404, detail=f"未找到 GPU {gpu_index}")
+
+
+def _find_gpu_process(gpu_index: int, pid: int, create_time: Optional[float]) -> Tuple[Dict[str, Any], Dict[str, Any], psutil.Process]:
+    """Re-query and identity-check a process before allowing termination."""
+    gpu = _gpu_for_index(gpu_index)
+    processes, errors = get_gpu_processes(gpu_index, gpu["uuid"])
+    if errors:
+        raise HTTPException(status_code=503, detail=safe_error_detail(errors[0]))
+    target = next((item for item in processes if item["pid"] == pid), None)
+    if target is None:
+        raise HTTPException(status_code=409, detail="目标进程已不再占用该 GPU")
+
+    if pid <= 4 or target.get("can_kill") is False:
+        raise HTTPException(status_code=403, detail=target.get("kill_reason") or "目标进程不可结束")
+    expected_create_time = create_time if create_time is not None else target.get("create_time")
+    if expected_create_time is None:
+        raise HTTPException(status_code=409, detail="无法确认目标进程身份，为防误杀已拒绝操作")
+    identity_status, process = check_process_identity(pid, expected_create_time)
+    if identity_status == "not_found":
+        raise HTTPException(status_code=409, detail="目标进程已退出")
+    if identity_status != "match" or process is None:
+        raise HTTPException(status_code=409, detail="目标 PID 身份已变化，为防误杀已拒绝操作")
+    return gpu, target, process
+
+
+@app.get("/api/gpus/{gpu_index}/processes", response_model=GpuProcessesResponse)
+def list_gpu_processes(gpu_index: int):
+    """List current compute processes for a physical GPU."""
+    gpu = _gpu_for_index(gpu_index)
+    processes, errors = get_gpu_processes(gpu_index, gpu["uuid"])
+    return GpuProcessesResponse(
+        gpu_index=gpu_index,
+        gpu_uuid=gpu["uuid"],
+        processes=[GpuProcess(**process) for process in processes],
+        errors=[safe_error_detail(error) for error in errors],
+    )
+
+
+@app.post("/api/gpus/{gpu_index}/processes/{pid}/kill", response_model=KillGpuProcessResponse)
+def kill_gpu_process(gpu_index: int, pid: int, req: Optional[KillGpuProcessRequest] = None):
+    """Explicitly terminate one currently GPU-bound process after identity checks."""
+    request = req or KillGpuProcessRequest()
+    gpu, target, process = _find_gpu_process(gpu_index, pid, request.create_time)
+
+    state = state_manager.load_state()
+    managed_instance_id = next(
+        (
+            instance_id
+            for instance_id, instance in state.get("instances", {}).items()
+            if instance.get("pid") == pid
+        ),
+        None,
+    )
+    if managed_instance_id:
+        result = _internal_stop_instance_by_id(managed_instance_id)
+        return KillGpuProcessResponse(
+            status=result.status,
+            gpu_index=gpu_index,
+            pid=pid,
+            exited=result.exited,
+            message=result.message,
+        )
+
+    result = kill_process_tree(pid)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"退出码 {result.returncode}"
+        raise HTTPException(status_code=500, detail=safe_error_detail(f"进程终止失败: {detail}"))
+
+    if not wait_process_exit(process, max_attempts=10, interval=0.5):
+        raise HTTPException(status_code=409, detail="终止请求已发送，但未确认目标进程退出")
+
+    return KillGpuProcessResponse(
+        status="success",
+        gpu_index=gpu_index,
+        pid=pid,
+        exited=True,
+        message=f"已强制结束 {target.get('name') or target.get('executable') or '目标进程'} (PID {pid})",
+    )
+
+
 # Core internal start logic shared by legacy and v1 APIs
-def _internal_start_profile(profile_name: str, target_gpu: Optional[str] = None) -> Tuple[str, int]:
+def _internal_start_profile(
+    profile_name: str,
+    target_gpu: Optional[str] = None,
+    force_clean_port: bool = False,
+    expected_port_pid: Optional[int] = None,
+) -> Tuple[str, int]:
     cfg = get_current_config()
     profiles = cfg.get("profiles", {})
     if profile_name not in profiles:
@@ -301,6 +433,66 @@ def _internal_start_profile(profile_name: str, target_gpu: Optional[str] = None)
     gpu_info = gpus_map.get(target_gpu_key)
     if not gpu_info:
         raise HTTPException(status_code=400, detail=safe_error_detail(f"未知的 GPU 设备: {target_gpu_key}"))
+
+    # Pre-flight Port Conflict Check
+    target_port = resolve_profile_port(p)
+    if target_port:
+        listener = find_port_listener(target_port)
+        if listener:
+            owner_pid = listener.get("pid")
+            owner_name = listener.get("name") or "未知进程"
+            is_sys = listener.get("is_system", False)
+
+            if not force_clean_port:
+                conflict_detail = PortConflictDetail(
+                    conflict="port_in_use",
+                    message=f"端口 {target_port} 已被外部进程 [{owner_name} (PID {owner_pid})] 占用",
+                    port=target_port,
+                    pid=owner_pid,
+                    name=owner_name,
+                    create_time=listener.get("create_time"),
+                    can_force_clean=not is_sys and owner_pid is not None and owner_pid > 4,
+                )
+                logger.warning(
+                    f"启动 Profile {profile_name} 中止: 端口 {target_port} 被占用 (PID {owner_pid}, name: {owner_name})"
+                )
+                raise HTTPException(status_code=409, detail=conflict_detail.model_dump())
+
+            # force_clean_port is True: User explicitly authorized cleanup
+            if is_sys or owner_pid is None or owner_pid <= 4:
+                raise HTTPException(
+                    status_code=403,
+                    detail=safe_error_detail(
+                        f"无法清理系统或受保护进程 (PID {owner_pid}) 占用的端口 {target_port}，请更改服务端口配置"
+                    ),
+                )
+
+            if expected_port_pid is not None and owner_pid != expected_port_pid:
+                raise HTTPException(
+                    status_code=409,
+                    detail=safe_error_detail(
+                        f"端口占用者已变更 (预期 PID {expected_port_pid}，当前 PID {owner_pid})，已中止操作以防误杀"
+                    ),
+                )
+
+            logger.info(f"显式清理端口 {target_port} 占用进程: PID {owner_pid} ({owner_name})")
+            kill_res = kill_process_tree(owner_pid)
+            if kill_res.returncode != 0:
+                logger.warning(f"终止占用端口的进程树 PID {owner_pid} 返回码非 0: {kill_res.stderr or kill_res.stdout}")
+
+            try:
+                owner_proc = psutil.Process(owner_pid)
+                if not wait_process_exit(owner_proc, max_attempts=10, interval=0.3):
+                    raise HTTPException(status_code=409, detail=safe_error_detail(f"终止占用端口的进程 PID {owner_pid} 超时，端口未释放"))
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                pass
+
+            if not wait_port_free(target_port, timeout=3.0, interval=0.2):
+                raise HTTPException(
+                    status_code=409,
+                    detail=safe_error_detail(f"进程 PID {owner_pid} 已退出，但端口 {target_port} 在 3 秒内未完全释放，请稍后重试"),
+                )
+            logger.info(f"端口 {target_port} 已成功释放，继续拉起新实例")
 
     env = os.environ.copy()
     env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -358,12 +550,13 @@ def _internal_start_profile(profile_name: str, target_gpu: Optional[str] = None)
     redacted_cmdline: str
 
     if is_wrapper:
+        disc_timeout = float(p.get("managed_process", {}).get("discover_timeout") or 15.0)
         disc_status, disc_proc, disc_err = discover_real_service(
             baseline_pids=baseline_pids,
             launcher_pid=proc.pid,
             expected_exe_names=target_exe_names,
             cmd_markers=target_markers,
-            timeout=10.0,
+            timeout=disc_timeout,
             poll_interval=0.5,
         )
 
@@ -425,6 +618,9 @@ def _internal_start_profile(profile_name: str, target_gpu: Optional[str] = None)
             "launcher_pid": proc.pid if is_wrapper else None,
             "launcher_create_time": launcher_create_time if is_wrapper else None,
             "launcher_executable": launcher_exe if is_wrapper else None,
+            "model_id": p.get("model_id"),
+            "context_size": p.get("context_size"),
+            "kv_quant": p.get("kv_quant"),
         }
         state_manager.save_state_atomic(state)
 
@@ -432,10 +628,132 @@ def _internal_start_profile(profile_name: str, target_gpu: Optional[str] = None)
     return inst_id, real_pid
 
 
+def _profile_for_script(profile_id: str) -> Dict[str, Any]:
+    """Load a profile for script access without accepting client paths."""
+    cfg = get_current_config()
+    profiles = cfg.get("profiles", {})
+    if not isinstance(profiles, dict) or profile_id not in profiles:
+        raise HTTPException(status_code=404, detail=safe_error_detail(f"未找到 Profile: {profile_id}"))
+    profile = profiles[profile_id]
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=400, detail="Profile 配置格式无效")
+    return profile
+
+
+def _script_response(profile_id: str, document: Any) -> ScriptResponse:
+    """Convert an internal script document into the path-free API shape."""
+    if document is None:
+        return ScriptResponse(profile_id=profile_id, content="", editable=False)
+    return ScriptResponse(
+        profile_id=profile_id,
+        filename=document.filename,
+        language=document.language,
+        content=document.content,
+        revision=document.revision,
+        editable=document.editable,
+    )
+
+
+def _raise_script_http_error(error: ScriptError) -> None:
+    """Map controlled-script failures to safe HTTP errors."""
+    if isinstance(error, ScriptConflictError):
+        # The revision is safe to expose and lets clients recover without
+        # revealing the server-side filename or absolute path.
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "脚本文件已被外部修改", "current_revision": error.current_revision},
+        ) from error
+    if isinstance(error, ScriptNotFoundError):
+        status_code = 404
+    elif isinstance(error, (ScriptReferenceError, ScriptNotRegularFileError)):
+        status_code = 400
+    elif isinstance(error, (ScriptTooLargeError, ScriptEncodingError)):
+        status_code = 422
+    elif isinstance(error, ScriptSaveError):
+        status_code = 500
+    else:
+        status_code = 500
+    raise HTTPException(status_code=status_code, detail=safe_error_detail(str(error))) from error
+
+
+# 2b. Controlled script read/write (path comes only from Profile args)
+@app.get("/api/profiles/{profile_id}/script", response_model=ScriptResponse)
+def get_profile_script(profile_id: str):
+    """Read the sole .cmd/.bat referenced by a configured profile."""
+    profile = _profile_for_script(profile_id)
+    try:
+        return _script_response(profile_id, read_script(profile))
+    except ScriptError as error:
+        _raise_script_http_error(error)
+
+
+@app.put("/api/profiles/{profile_id}/script", response_model=ScriptSaveResponse)
+def put_profile_script(profile_id: str, req: ScriptSaveRequest):
+    """Atomically update only the configured profile script."""
+    profile = _profile_for_script(profile_id)
+    expected_revision = req.get_expected_revision()
+    if expected_revision is None:
+        raise HTTPException(status_code=422, detail="保存脚本需要 revision")
+    try:
+        document = save_script(profile, req.content, expected_revision)
+        return ScriptSaveResponse(
+            profile_id=profile_id,
+            filename=document.filename,
+            language=document.language,
+            content=document.content,
+            revision=document.revision,
+            editable=document.editable,
+        )
+    except ScriptError as error:
+        _raise_script_http_error(error)
+
+
+# 2c. Delete profile configuration entry
+@app.delete("/api/profiles/{profile_id}", response_model=DeleteProfileResponse)
+def delete_profile_endpoint(profile_id: str):
+    """Atomically remove a profile entry from runtimes.json if not actively running."""
+    cfg = get_current_config()
+    profiles = cfg.get("profiles", {})
+    if not isinstance(profiles, dict) or profile_id not in profiles:
+        raise HTTPException(status_code=404, detail=safe_error_detail(f"未找到 Profile: {profile_id}"))
+
+    # Verify no alive managed instance is currently running this profile
+    state = state_manager.load_state()
+    for inst_id, inst in state.get("instances", {}).items():
+        if inst.get("profile") == profile_id and not is_legacy_wrapper_state(inst):
+            identity_status, _ = check_process_identity(inst.get("pid", 0), inst.get("create_time", 0))
+            if identity_status in ("match", "error"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=safe_error_detail(
+                        f"Profile '{profile_id}' 当前有受管实例正在运行或状态检查异常 (PID: {inst.get('pid')})，请先关闭实例后再删除配置"
+                    ),
+                )
+
+    try:
+        delete_profile_config(CONFIG_FILE, profile_id)
+        logger.info(f"已删除 Profile 配置: {profile_id}")
+        return DeleteProfileResponse(
+            status="success",
+            message=f"已成功删除 Profile '{profile_id}' 的配置项",
+            profile_id=profile_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=safe_error_detail(f"未找到 Profile: {profile_id}"))
+    except Exception as exc:
+        logger.error(f"删除 Profile 配置失败: {exc}")
+        raise HTTPException(status_code=500, detail=safe_error_detail("删除 Profile 配置失败")) from exc
+
+
 # 3. Explicitly launch an instance (Legacy route)
 @app.post("/api/instances/start", response_model=StartResponse)
 def start_instance(req: StartRequest):
-    inst_id, real_pid = _internal_start_profile(req.profile, req.gpu)
+    inst_id, real_pid = _internal_start_profile(
+        req.profile,
+        req.gpu,
+        force_clean_port=req.force_clean_port,
+        expected_port_pid=req.expected_port_pid,
+    )
     return StartResponse(status="success", instance_id=inst_id, pid=real_pid)
 
 
@@ -523,7 +841,8 @@ def _internal_stop_instance_by_id(instance_id: str) -> StopResponse:
                 detail=safe_error_detail(f"实例 {instance_id} 的终止命令失败，状态记录已保留: {detail}"),
             )
 
-        exited_cleanly = wait_process_exit(proc, max_attempts=10, interval=0.5)
+        # Give up to 15s for large VRAM/RAM unpinning in Windows kernel
+        exited_cleanly = wait_process_exit(proc, max_attempts=30, interval=0.5)
 
         if not exited_cleanly:
             raise HTTPException(
@@ -543,7 +862,7 @@ def _internal_stop_instance_by_id(instance_id: str) -> StopResponse:
                 if launcher_result.returncode != 0:
                     detail = launcher_result.stderr.strip() or launcher_result.stdout.strip() or f"退出码 {launcher_result.returncode}"
                     raise HTTPException(status_code=500, detail=safe_error_detail(f"启动器 PID {l_pid} 终止失败，状态记录已保留: {detail}"))
-                if not wait_process_exit(l_proc, max_attempts=4, interval=0.25):
+                if not wait_process_exit(l_proc, max_attempts=12, interval=0.25):
                     raise HTTPException(status_code=409, detail=safe_error_detail(f"启动器 PID {l_pid} 未确认退出，状态记录已保留"))
 
         del instances[instance_id]
@@ -595,7 +914,14 @@ def v1_get_profile_status(profile_id: str):
 def v1_start_profile(profile_id: str, req: Optional[V1StartRequest] = None):
     """Start profile and return safe status."""
     target_gpu = req.gpu if req else None
-    _internal_start_profile(profile_id, target_gpu)
+    force_clean = req.force_clean_port if req else False
+    expected_pid = req.expected_port_pid if req else None
+    _internal_start_profile(
+        profile_id,
+        target_gpu,
+        force_clean_port=force_clean,
+        expected_port_pid=expected_pid,
+    )
     return get_profile_live_status(profile_id)
 
 

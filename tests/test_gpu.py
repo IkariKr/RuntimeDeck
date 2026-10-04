@@ -1,10 +1,10 @@
 """Unit tests for GPU metrics parsing and resilient error handling."""
 
 import subprocess
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import pytest
 
-from runtime_deck.gpu import get_gpu_metrics
+from runtime_deck.gpu import get_gpu_metrics, get_gpu_processes
 
 
 def test_get_gpu_metrics_success():
@@ -89,3 +89,36 @@ def test_get_gpu_metrics_malformed_lines():
     assert len(gpus) == 1
     assert gpus[0]["index"] == 0
     assert gpus[0]["uuid"] == "GPU-UUID-1"
+
+
+def test_get_gpu_processes_filters_uuid_and_sorts_by_memory():
+    sample_output = (
+        "GPU-OTHER, 20, other.exe, 900\n"
+        "GPU-TARGET, 42, python.exe, 2048\n"
+        "GPU-TARGET, 7, llama-server.exe, 512\n"
+    )
+    process = MagicMock()
+    process.name.return_value = "python.exe"
+    process.exe.return_value = "C:\\AI\\python.exe"
+    process.create_time.return_value = 123.5
+    with patch("subprocess.check_output", return_value=sample_output), patch(
+        "runtime_deck.gpu.psutil.Process", return_value=process
+    ):
+        processes, errors = get_gpu_processes(1, "GPU-TARGET")
+
+    assert errors == []
+    assert [item["pid"] for item in processes] == [42, 7]
+    assert all(item["gpu_uuid"] == "GPU-TARGET" for item in processes)
+    assert processes[0]["used_mb"] == 2048
+    assert processes[0]["create_time"] == 123.5
+    assert processes[0]["can_kill"] is True
+
+
+def test_get_gpu_processes_handles_driver_error():
+    error = subprocess.CalledProcessError(returncode=1, cmd=["nvidia-smi"], output="Access denied")
+    with patch("subprocess.check_output", side_effect=error):
+        processes, errors = get_gpu_processes(0, "GPU-0")
+
+    assert processes == []
+    assert errors
+    assert "退出码 1" in errors[0]

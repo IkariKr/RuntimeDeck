@@ -29,6 +29,10 @@ PROFILE_SERVICE_SPECS = {
         "exe_names": ["llama-server.exe", "llama-server"],
         "cmd_markers": ["Qwen3.8-27B-GSQ-RCO", "8080"],
     },
+    "Qwen_27B-GSQ": {
+        "exe_names": ["llama-server.exe", "llama-server"],
+        "cmd_markers": ["Qwen3.8-27B-GSQ-RCO", "8080"],
+    },
 }
 
 # Generic fallback specs by profile name substrings or commands if profile not exactly matched

@@ -140,7 +140,16 @@ class TestGpuCardResponsiveCollapse:
         hdr_rules = hdr_match.group(1)
         assert "display: flex" in hdr_rules and "justify-content: space-between" in hdr_rules
 
-
+    def test_gpu_process_panel_and_context_menu_contract(self, css_content: str, js_content: str, html_content: str):
+        """GPU cards expose a compact process panel and explicit context-menu action."""
+        assert ".gpu-process-row" in css_content
+        assert ".gpu-context-menu" in css_content
+        assert "contextmenu" in js_content
+        assert "fetchGpuProcesses" in js_content
+        assert "escapeHtml(process" in js_content
+        assert "process.can_kill === false" in js_content
+        assert 'id="gpuContextMenu"' in html_content
+        assert 'id="gpuKillProcess"' in html_content
 class TestLaunchFormAndInstanceControlsUsability:
     """Verify launch form and instance controls remain usable and touch-friendly on mobile & tablets."""
 

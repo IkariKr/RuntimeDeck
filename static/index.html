@@ -58,10 +58,55 @@
             <select id="gpuSelect" class="form-select" aria-label="目标显卡 (可手动覆盖)"></select>
           </div>
         </div>
-        <button id="btnStart" type="button" class="btn-start" aria-label="显式启动选定服务">
-          🚀 显式启动选定服务
-        </button>
+        <div class="start-actions-row">
+          <button id="btnStart" type="button" class="btn-start" aria-label="显式启动选定服务">
+            🚀 显式启动选定服务
+          </button>
+          <button id="btnDeleteProfile" type="button" class="btn-delete-profile" aria-label="删除当前选中的 Profile 配置项">
+            🗑️ 删除当前配置
+          </button>
+        </div>
+
+        <section id="scriptEditor" class="script-editor" aria-labelledby="scriptEditorHeading">
+          <div class="script-editor-header">
+            <div>
+              <h3 id="scriptEditorHeading" class="script-editor-title">Profile 管理脚本</h3>
+              <p class="script-editor-subtitle">编辑当前 Profile 的本地 Batch 启动脚本，修改只会在保存后写入配置。</p>
+            </div>
+            <span id="scriptReadOnlyBadge" class="script-readonly-badge" hidden aria-live="polite">只读</span>
+            <span id="scriptDirtyBadge" class="script-dirty-badge" hidden aria-live="polite">未保存</span>
+          </div>
+
+          <div id="scriptSearchBar" class="script-search-bar" hidden aria-label="脚本文本搜索">
+            <label class="script-search-label" for="scriptSearchInput">查找</label>
+            <input id="scriptSearchInput" class="script-search-input" type="search" autocomplete="off" spellcheck="false" aria-label="搜索脚本文本" aria-describedby="scriptSearchStatus">
+            <button id="btnScriptSearch" type="button" class="btn-search" aria-label="确定搜索脚本文本">确定</button>
+            <button id="btnCloseScriptSearch" type="button" class="btn-search-close" aria-label="关闭脚本搜索">×</button>
+            <span id="scriptSearchStatus" class="script-search-status" role="status" aria-live="polite" aria-atomic="true">输入文本后点击确定</span>
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="scriptTextarea">启动脚本内容</label>
+            <div id="scriptEditorShell" class="script-editor-shell">
+              <pre id="scriptHighlight" class="script-highlight" aria-hidden="true"><code id="scriptHighlightCode"></code></pre>
+              <textarea id="scriptTextarea" class="script-textarea" rows="12" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="soft" aria-describedby="scriptHelp scriptStatus" aria-label="Profile Batch 启动脚本"></textarea>
+            </div>
+          </div>
+
+          <div class="script-editor-actions">
+            <span id="scriptStatus" class="script-status" role="status" aria-live="polite" aria-atomic="true">准备加载脚本</span>
+            <div class="script-editor-buttons">
+              <button id="btnReloadScript" type="button" class="btn-secondary" aria-label="重新加载当前 Profile 脚本">重新加载</button>
+              <button id="btnSaveScript" type="button" class="btn-save" aria-label="保存当前 Profile 脚本">保存脚本</button>
+            </div>
+          </div>
+          <ul id="scriptCompletionList" class="script-completion-list" role="listbox" aria-label="脚本补全建议" hidden></ul>
+          <p id="scriptHelp" class="script-help">提示：输入命令前缀可查看建议，按 Ctrl+Space 打开补全；脚本内容仅发送到同源 RuntimeDeck。</p>
+        </section>
       </section>
+      <div id="gpuContextMenu" class="gpu-context-menu" role="menu" aria-label="GPU 进程操作" hidden>
+        <button id="gpuKillProcess" class="gpu-context-menu-item" type="button" role="menuitem">强制结束</button>
+      </div>
     </main>
 
   </div>

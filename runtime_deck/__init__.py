@@ -21,6 +21,12 @@ from runtime_deck.process import (
     wait_process_exit,
     IS_WINDOWS,
 )
+from runtime_deck.ports import (
+    resolve_profile_port,
+    is_port_listening,
+    find_port_listener,
+    wait_port_free,
+)
 
 __all__ = [
     "AppConfig",
@@ -41,4 +47,8 @@ __all__ = [
     "kill_process_tree",
     "wait_process_exit",
     "IS_WINDOWS",
+    "resolve_profile_port",
+    "is_port_listening",
+    "find_port_listener",
+    "wait_port_free",
 ]
